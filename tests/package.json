@@ -1,0 +1,15 @@
+{
+	"name": "bench-tests",
+	"version": "1.0.0",
+	"type": "module",
+	"scripts": {
+		"bench:all": "node run-bench.js all",
+		"bench:react": "node run-bench.js react",
+		"bench:vue": "node run-bench.js vue",
+		"bench:angular": "node run-bench.js angular"
+	},
+	"dependencies": {
+		"prettier": "^3.6.2",
+		"puppeteer": "^21.11.0"
+	}
+}

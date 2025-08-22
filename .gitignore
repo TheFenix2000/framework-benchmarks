@@ -1,0 +1,12 @@
+node_modules
+tests/node_modules
+tests/out
+react-bench/node_modules
+react-bench/dist
+angular-bench/node_modules
+angular-bench/dist
+angular-bench/.angular
+angular-bench/.vscode
+vue-bench/node_modules
+vue-bench/dist
+vue-bench/.vscode
