@@ -3,6 +3,8 @@ import fs from "fs/promises";
 import path from "path";
 import puppeteer from "puppeteer";
 
+import chalk from "chalk";
+
 const root = path.resolve(".");
 const projects = {
 	react: { dir: path.join(root, "../react-bench"), port: 4173, build: "npm run build", start: ["npm", ["run", "preview"]] },
@@ -20,17 +22,17 @@ async function exec(cmd, opts = {}) {
 async function runAllTestsForFramework(name) {
 	const proj = projects[name];
 	if (!proj) throw new Error("Unknown: " + name);
-	console.log(`\n=== [${name}] build ===`);
+	console.log(`\n[${name}] build ===`);
 	await exec(proj.build, { cwd: proj.dir });
 
-	console.log(`=== [${name}] start server ===`);
+	console.log(`[${name}] start server ===`);
 	const server = spawn(proj.start[0], proj.start[1], {
 		cwd: proj.dir,
 		stdio: "inherit",
 		shell: true,
 	});
 
-	console.log(`=== [${name}] launching puppeteer ===`);
+	console.log(`[${name}] launching puppeteer ===`);
 	const browser = await puppeteer.launch({ headless: "true", args: ["--no-sandbox", "--disable-setuid-sandbox"] });
 	const page = await browser.newPage();
 	const url = `http://localhost:${proj.port}`;
@@ -44,7 +46,7 @@ async function runAllTestsForFramework(name) {
 	await page.waitForFunction(() => !!window.runRenderBenchmark, { timeout: 60000 });
 
 	// 1) render benchmark
-	console.log(`[${name}] running render benchmark...`);
+	console.log(chalk.magenta(`[${name}] running render benchmark...`));
 	const renderRes = await page.evaluate(async () => {
 		if (typeof window.runRenderBenchmark === "function") {
 			return await window.runRenderBenchmark();
@@ -53,7 +55,7 @@ async function runAllTestsForFramework(name) {
 	});
 
 	// 2) bulk updates (default 10000 rows, 1000 updates)
-	console.log(`[${name}] running bulk updates...`);
+	console.log(chalk.magenta(`[${name}] running bulk updates...`));
 	const bulkRes = await page.evaluate(async () => {
 		if (typeof window.runBulkUpdates === "function") {
 			return await window.runBulkUpdates({ rowsCount: 10000, updatesCount: 1000 });
@@ -62,7 +64,7 @@ async function runAllTestsForFramework(name) {
 	});
 
 	// 3) mount/unmount churn (default 1000 components, 100 cycles)
-	console.log(`[${name}] running mount/unmount churn...`);
+	console.log(chalk.magenta(`[${name}] running mount/unmount churn...`));
 	const churnRes = await page.evaluate(async () => {
 		if (typeof window.runMountUnmount === "function") {
 			return await window.runMountUnmount({ components: 1000, cycles: 100 });
@@ -72,6 +74,8 @@ async function runAllTestsForFramework(name) {
 
 	// collect unified object
 	const out = { framework: name, render: renderRes, bulk: bulkRes, churn: churnRes, timestamp: new Date().toISOString() };
+
+	console.log(chalk.magenta(`[${name}] creating results...`));
 
 	await fs.mkdir(path.join(root, "./out"), { recursive: true });
 	await fs.writeFile(path.join(root, `./out/${name}-results.json`), JSON.stringify(out, null, 2));
@@ -142,6 +146,7 @@ function buildMarkdownReport(all) {
 }
 
 (async () => {
+	const startTime = Date.now();
 	const arg = process.argv[2] ?? "all";
 	const frameworks = arg === "all" ? Object.keys(projects) : [arg];
 	const results = [];
@@ -155,10 +160,14 @@ function buildMarkdownReport(all) {
 	}
 
 	// write CSV + MD
+	console.log(`\n=== * Generating CSV * ===`);
 	const csv = allResultsToCSV(results);
-	const md = buildMarkdownReport(results);
 	await fs.writeFile(path.join(root, "./out/results.csv"), "framework,test,detail1,detail2,time_ms\n" + csv + "\n");
+	console.log(`=== * Generating Markdown report * ===`);
+	const md = buildMarkdownReport(results);
 	await fs.writeFile(path.join(root, "./out/report.md"), md);
 	await fs.writeFile(path.join(root, "./out/all-results.json"), JSON.stringify(results, null, 2));
-	console.log("\n=== Finished. Outputs in ./out ===");
+	console.log(chalk.green("=== ✅ All results written to ./out ==="));
+	const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+	console.log(chalk.blueBright(`Elapsed time: ${elapsed} seconds`));
 })();

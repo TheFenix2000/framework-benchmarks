@@ -9,6 +9,7 @@
 		"bench:angular": "node run-bench.js angular"
 	},
 	"dependencies": {
+		"chalk": "^5.6.0",
 		"prettier": "^3.6.2",
 		"puppeteer": "^21.11.0"
 	}
