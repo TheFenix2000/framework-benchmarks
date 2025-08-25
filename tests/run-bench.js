@@ -78,47 +78,106 @@ const chartWidth = 1000;
 const chartHeight = 500;
 const chartCanvas = new ChartJSNodeCanvas({ width: chartWidth, height: chartHeight });
 
-async function generateComparisonPlotRender(allFrameworksData, sizes, outFile) {
+// helper: format number nicely
+function fmtNum(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "N/A";
+  // show integer if near-integer, otherwise one decimal
+  if (Math.abs(v - Math.round(v)) < 0.001) return String(Math.round(v));
+  return (Math.round(v * 10) / 10).toFixed(1);
+}
+
+// plugin rysujący etykiety na słupkach
+const barValueLabelsPlugin = {
+  id: "barValueLabels",
+  afterDatasetsDraw(chart, args, pluginOptions) {
+    const ctx = chart.ctx;
+    const opts = (chart.options.plugins && chart.options.plugins.barValueLabels) || pluginOptions || {};
+    const rotate = !!opts.rotate;
+    const font = (opts.font || "12px Arial");
+    const color = opts.color || "#000";
+    const padding = typeof opts.padding === "number" ? opts.padding : 6;
+
+    chart.data.datasets.forEach((dataset, dsIndex) => {
+      const meta = chart.getDatasetMeta(dsIndex);
+      meta.data.forEach((element, index) => {
+        const value = dataset.data[index];
+        if (value == null) return;
+        // position on bar
+        const px = element.x;
+        const py = element.y;
+        ctx.save();
+        ctx.font = font;
+        ctx.fillStyle = color;
+        ctx.textAlign = "center";
+        if (rotate) {
+          // draw vertical label rotated -90deg; shift slightly left of bar top
+          ctx.translate(px, py - padding);
+          ctx.rotate(-Math.PI / 2);
+          ctx.textBaseline = "middle";
+          ctx.fillText(String(fmtNum(value)), 0, 0);
+        } else {
+          // horizontal label above bar
+          ctx.textBaseline = "bottom";
+          ctx.fillText(String(fmtNum(value)), px, py - padding);
+        }
+        ctx.restore();
+      });
+    });
+  }
+};
+
+async function generateComparisonPlotRender(allFrameworksData, sizes, outFile, opts = {}) {
 	// allFrameworksData: { frameworkName: { size: {median:..} } }
-	const labels = sizes.map((s) => String(s));
+	const labels = sizes.map(String);
 	const frameworks = Object.keys(allFrameworksData);
-	const datasets = frameworks.map((fw) => {
+	const datasets = frameworks.map((fw, idx) => {
 		const data = sizes.map((size) => {
 			const stat = allFrameworksData[fw][size];
-			return stat ? stat.median : null;
+			return stat ? Number(stat.median) : null;
 		});
 		return {
 			label: fw,
 			data,
+			// optional: you can tune bar thickness / order
+			// barThickness: 30 - leave Chart.js to auto layout
 		};
 	});
 
 	const config = {
 		type: "bar",
-		data: {
-			labels,
-			datasets,
-		},
+		data: { labels, datasets },
 		options: {
 			responsive: false,
 			plugins: {
 				title: { display: true, text: "Render time (median ms) — sizes" },
+				legend: { position: "top" },
+				// plugin options for our label plugin
+				barValueLabels: {
+					rotate: false, // <--- set true to draw vertical labels
+					font: "11px Arial",
+					color: "#111",
+					padding: 6,
+				},
 			},
 			scales: {
-				x: { stacked: false },
-				y: { title: { display: true, text: "ms" } },
+				x: { stacked: false, title: { display: true, text: "rows" } },
+				y: { title: { display: true, text: "ms" }, beginAtZero: true },
 			},
 		},
+		plugins: [barValueLabelsPlugin],
 	};
 
 	const buffer = await chartCanvas.renderToBuffer(config);
 	await fs.writeFile(outFile, buffer);
 }
 
-async function generateComparisonPlotSimple(metricName, frameworkStatsMap, outFile) {
-	// frameworkStatsMap: { fw: { median: .. } }
+async function generateComparisonPlotSimple(metricName, frameworkStatsMap, outFile, opts = {}) {
 	const labels = Object.keys(frameworkStatsMap);
-	const data = labels.map((l) => (frameworkStatsMap[l] ? frameworkStatsMap[l].median : null));
+	const data = labels.map((l) => {
+		const s = frameworkStatsMap[l];
+		return s ? Number(s.median) : null;
+	});
+
 	const config = {
 		type: "bar",
 		data: {
@@ -127,10 +186,22 @@ async function generateComparisonPlotSimple(metricName, frameworkStatsMap, outFi
 		},
 		options: {
 			responsive: false,
-			plugins: { title: { display: true, text: `${metricName} (median ms)` } },
-			scales: { y: { title: { display: true, text: "ms" } } },
+			plugins: {
+				title: { display: true, text: `${metricName} (median ms)` },
+				barValueLabels: {
+					rotate: false, // set true for vertical labels
+					font: "12px Arial",
+					color: "#111",
+					padding: 6,
+				},
+			},
+			scales: {
+				y: { beginAtZero: true, title: { display: true, text: "ms" } },
+			},
 		},
+		plugins: [barValueLabelsPlugin],
 	};
+
 	const buffer = await chartCanvas.renderToBuffer(config);
 	await fs.writeFile(outFile, buffer);
 }
@@ -273,7 +344,6 @@ async function runAllTestsForFramework(name, iterations = 5) {
 		// short cooldown between iterations
 		await new Promise((r) => setTimeout(r, 300));
 	}
-
 
 	await browser.close();
 	server.kill();
