@@ -161,6 +161,8 @@ async function runAllTestsForFramework(name, iterations = 5) {
 	console.log(chalk.cyan(`[${name}] launching puppeteer...`));
 	const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
 	const page = await browser.newPage();
+	await page.setCacheEnabled(false);
+
 	const url = `http://localhost:${proj.port}`;
 	await page.goto(url, { waitUntil: "networkidle2", timeout: 120000 });
 
@@ -173,28 +175,105 @@ async function runAllTestsForFramework(name, iterations = 5) {
 	const rawChurnRuns = [];
 
 	console.log(chalk.magenta(`[${name}] running ${iterations} iterations for each test...`));
+	const maxRetries = 3;
 	for (let i = 0; i < iterations; i++) {
-		console.log(chalk.magenta(`[${name}] iteration ${i + 1}/${iterations} — render`));
-		const renderRes = await page.evaluate(async () => {
-			return await window.runRenderBenchmark();
-		});
+		console.log(chalk.magenta(`[${name}] iteration ${i + 1}/${iterations} starting...`));
+
+		// reload page to ensure clean state
+		await page.reload({ waitUntil: "networkidle2", timeout: 120000 });
+		// wait until API available
+		await page.waitForFunction(() => !!(window.runRenderBenchmark && window.runBulkUpdates && window.runMountUnmount), { timeout: 60000 });
+
+		// --- RENDER TEST with validation + retry ---
+		let renderRes = null;
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			console.log(chalk.magenta(`[${name}] iteration ${i + 1}, render attempt ${attempt}`));
+			renderRes = await page.evaluate(async () => {
+				return await window.runRenderBenchmark();
+			});
+
+			// validation: pick the largest size present in the returned object and verify DOM row count
+			try {
+				const sizes = Object.keys(renderRes || {})
+					.map((s) => Number(s))
+					.filter((n) => !isNaN(n))
+					.sort((a, b) => a - b);
+				if (sizes.length > 0) {
+					const largest = sizes[sizes.length - 1];
+					// get actual DOM row count for table (make selector match your table)
+					const actual = await page.evaluate((selector) => {
+						const tbody = document.querySelector(selector);
+						if (!tbody) return 0;
+						return tbody.querySelectorAll("tr").length;
+					}, "table tbody"); // <- dopasuj selector jeśli masz inny markup
+
+					if (actual === largest) {
+						console.log(chalk.green(`[${name}] render validated: ${actual} rows (expected ${largest})`));
+						break; // success
+					} else {
+						console.warn(chalk.yellow(`[${name}] render validation mismatch: actual=${actual} expected=${largest}`));
+						// retry unless last attempt
+					}
+				} else {
+					console.warn(chalk.yellow(`[${name}] render returned no sizes, accepting as-is.`));
+					break;
+				}
+			} catch (e) {
+				console.warn(chalk.yellow(`[${name}] validation error: ${e.message}`));
+			}
+
+			if (attempt === maxRetries) {
+				console.error(chalk.red(`[${name}] render failed validation after ${maxRetries} attempts — recording raw result anyway.`));
+			} else {
+				// short cooldown before retry
+				await new Promise((r) => setTimeout(r, 500));
+			}
+		}
 		rawRenderRuns.push(renderRes || {});
 
-		console.log(chalk.magenta(`[${name}] iteration ${i + 1}/${iterations} — bulk`));
-		const bulkRes = await page.evaluate(async () => {
-			return (await window.runBulkUpdates?.()) || null;
-		});
+		// --- BULK test with retry (optional validation) ---
+		let bulkRes = null;
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			console.log(chalk.magenta(`[${name}] iteration ${i + 1}, bulk attempt ${attempt}`));
+			bulkRes = await page.evaluate(async () => {
+				return await window.runBulkUpdates?.({ rowsCount: 10000, updatesCount: 1000 });
+			});
+
+			// optional validation: check bulkRes.total_ms exists and is > 0, or check DOM changed
+			if (bulkRes && typeof bulkRes.total_ms === "number" && bulkRes.total_ms >= 0) {
+				break;
+			} else if (attempt === maxRetries) {
+				console.warn(chalk.yellow(`[${name}] bulk didn't return valid total_ms after ${maxRetries} attempts.`));
+				break;
+			} else {
+				await new Promise((r) => setTimeout(r, 500));
+			}
+		}
 		rawBulkRuns.push(bulkRes);
 
-		console.log(chalk.magenta(`[${name}] iteration ${i + 1}/${iterations} — churn`));
-		const churnRes = await page.evaluate(async () => {
-			return (await window.runMountUnmount?.()) || null;
-		});
+		// --- CHURN test with retry ---
+		let churnRes = null;
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			console.log(chalk.magenta(`[${name}] iteration ${i + 1}, churn attempt ${attempt}`));
+			churnRes = await page.evaluate(async () => {
+				return await window.runMountUnmount?.({ components: 1000, cycles: 100 });
+			});
+
+			if (churnRes && typeof churnRes.total_ms === "number" && churnRes.total_ms >= 0) {
+				break;
+			} else if (attempt === maxRetries) {
+				console.warn(chalk.yellow(`[${name}] churn didn't return valid total_ms after ${maxRetries} attempts.`));
+				break;
+			} else {
+				await new Promise((r) => setTimeout(r, 500));
+			}
+		}
 		rawChurnRuns.push(churnRes);
 
-		// allow short cooldown between iterations
+		// short cooldown between iterations
 		await new Promise((r) => setTimeout(r, 300));
 	}
+
 
 	await browser.close();
 	server.kill();
